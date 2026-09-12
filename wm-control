@@ -1,0 +1,792 @@
+#!/usr/bin/env bash
+#
+# Hive SEC WarMachine – Multiplex Terminal Control Interface (TUI)
+# Professional control center for the ethical hacking workspace
+# Fully integrated with the WarMachine Python 3 venv
+#
+# Usage:  wm-control          (or ./wm-control)
+#         wm-control start    → launch full multiplex session
+#         wm-control menu     → simple category launcher
+#         wm-control python   → drop into WarMachine Python shell
+#
+# LEGAL: Authorized use only. You are responsible for compliance with all laws.
+#
+
+set -euo pipefail
+
+# ---------- Configuration ----------
+WORKSPACE="${HOME}/WarMachine"
+[[ -d /opt/WarMachine ]] && WORKSPACE="/opt/WarMachine"
+TOOLS_DIR="${WORKSPACE}/tools"
+WORDLISTS_DIR="${WORKSPACE}/wordlists"
+REPORTS_DIR="${WORKSPACE}/reports"
+BIN_DIR="${WORKSPACE}/bin"
+VENV_DIR="${WORKSPACE}/venv"
+LOGFILE="${WORKSPACE}/control.log"
+SESSION_NAME="WarMachine"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+# ---------- Helpers ----------
+log()   { echo -e "${GREEN}[+]${NC} $*" | tee -a "$LOGFILE" 2>/dev/null || echo -e "${GREEN}[+]${NC} $*"; }
+warn()  { echo -e "${YELLOW}[!]${NC} $*"; }
+error() { echo -e "${RED}[-]${NC} $*"; }
+info()  { echo -e "${CYAN}[*]${NC} $*"; }
+
+banner() {
+  clear
+  echo -e "${BLUE}${BOLD}"
+  cat << 'EOF'
+  _    _              __  __            _     _            
+ | |  | |            |  \/  |          | |   (_)           
+ | |  | | __ _ _ __  | \  / | __ _  ___| |__  _ _ __   ___ 
+ | |/\| |/ _` | '__| | |\/| |/ _` |/ __| '_ \| | '_ \ / _ \
+ \  /\  / (_| | |    | |  | | (_| | (__| | | | | | | |  __/
+  \/  \/ \__,_|_|    |_|  |_|\__,_|\___|_| |_|_|_| |_|\___|
+                                                           
+  CONTROL INTERFACE  •  Multiplex Terminal TUI  •  Python3 + Rust
+EOF
+  echo -e "${NC}"
+  echo -e "  Workspace : ${CYAN}${WORKSPACE}${NC}"
+  echo -e "  Tools     : ${CYAN}${TOOLS_DIR}${NC}"
+  if [[ -d "$VENV_DIR" ]]; then
+    echo -e "  Python    : ${GREEN}${VENV_DIR}${NC} (active ready)"
+  else
+    echo -e "  Python    : ${YELLOW}venv not found – run installer option 0${NC}"
+  fi
+  if command -v rustscan &>/dev/null || [[ -x "${HOME}/.cargo/bin/rustscan" ]]; then
+    echo -e "  Rust      : ${GREEN}~/.cargo/bin${NC} (rustscan, feroxbuster…)"
+  else
+    echo -e "  Rust      : ${YELLOW}not installed – run installer option 13${NC}"
+  fi
+  echo -e "  Session   : ${MAGENTA}${SESSION_NAME}${NC}"
+  echo
+}
+
+ensure_workspace() {
+  if [[ ! -d "$WORKSPACE" ]]; then
+    error "WarMachine workspace not found at $WORKSPACE"
+    echo "Run the installer first:  sudo ./install_warmachine.sh"
+    exit 1
+  fi
+  mkdir -p "$BIN_DIR" "$REPORTS_DIR" 2>/dev/null || true
+}
+
+# Activate WarMachine Python environment if available
+activate_python() {
+  if [[ -f "${VENV_DIR}/bin/activate" ]]; then
+    # shellcheck disable=SC1091
+    source "${VENV_DIR}/bin/activate"
+    export PATH="${BIN_DIR}:${PATH}"
+    return 0
+  fi
+  return 1
+}
+
+# ---------- Tool launch helpers ----------
+run_tool() {
+  local name="$1"
+  local cmd="$2"
+  local dir="${3:-$TOOLS_DIR}"
+
+  # Prefer launcher created by installer
+  if [[ -x "${BIN_DIR}/${name}" ]]; then
+    info "Launching $name via WarMachine launcher"
+    exec "${BIN_DIR}/${name}"
+  fi
+
+  # Prefer cargo bin (Rust tools)
+  if [[ -x "${HOME}/.cargo/bin/${cmd}" ]]; then
+    info "Launching $name → ~/.cargo/bin/${cmd}"
+    exec "${HOME}/.cargo/bin/${cmd}"
+  fi
+  if [[ -x "${HOME}/.cargo/bin/${name}" ]]; then
+    info "Launching $name → ~/.cargo/bin/${name}"
+    exec "${HOME}/.cargo/bin/${name}"
+  fi
+
+  # Prefer system binary
+  if command -v "$cmd" &>/dev/null; then
+    info "Launching $name → $cmd"
+    exec $cmd
+  fi
+
+  # Fall back to tool directory + Python venv
+  if [[ -d "$dir/$name" ]]; then
+    info "Launching $name from $dir/$name"
+    cd "$dir/$name"
+    activate_python || true
+
+    if [[ -f "$name.py" ]]; then
+      exec python3 "$name.py" "${@:4}"
+    elif [[ -f "theHarvester.py" && "$name" == "theHarvester" ]]; then
+      exec python3 theHarvester.py "${@:4}"
+    elif [[ -f "sqlmap.py" && "$name" == "sqlmap" ]]; then
+      exec python3 sqlmap.py "${@:4}"
+    elif [[ -f "dirsearch.py" && "$name" == "dirsearch" ]]; then
+      exec python3 dirsearch.py "${@:4}"
+    elif [[ -f "Responder.py" && "$name" == "Responder" ]]; then
+      exec python3 Responder.py "${@:4}"
+    elif [[ -f "vol.py" && "$name" == "volatility3" ]]; then
+      exec python3 vol.py "${@:4}"
+    elif [[ -f "main.py" ]]; then
+      exec python3 main.py "${@:4}"
+    elif [[ -x "./$name" ]]; then
+      exec ./"$name" "${@:4}"
+    else
+      warn "Tool directory found but no clear entry point."
+      echo "Opening shell inside $dir/$name (Python venv activated if available)"
+      activate_python || true
+      exec bash
+    fi
+  else
+    warn "$name not found. Install the corresponding category first."
+    sleep 2
+  fi
+}
+
+drop_into_python() {
+  banner
+  if activate_python; then
+    info "WarMachine Python venv activated."
+    echo "Available: scapy, impacket, sqlmap, theHarvester, dirsearch, volatility3, etc."
+    echo "Type 'exit' to leave."
+    echo
+    exec bash --rcfile <(echo "PS1='(wm-python) \u@\h:\w\$ '")
+  else
+    error "Python venv not found. Run the installer and choose option 0 first."
+    sleep 2
+  fi
+}
+
+# ---------- Category menus ----------
+menu_recon() {
+  while true; do
+    banner
+    echo -e "${BOLD}  RECONNAISSANCE / FOOTPRINTING${NC}"
+    echo
+    echo "  1) nmap"
+    echo "  2) theHarvester          (Python)"
+    echo "  3) Amass"
+    echo "  4) Subfinder"
+    echo "  5) Sherlock              (Python)"
+    echo "  6) dnsrecon              (Python)"
+    echo "  7) wafw00f               (Python)"
+    echo "  8) WhatWeb"
+    echo "  9) Recon-ng              (Python)"
+    echo "  0) Back"
+    echo
+    read -rp "  Choice: " c
+    case $c in
+      1) run_tool "nmap" "nmap" ;;
+      2) run_tool "theHarvester" "theHarvester" ;;
+      3) run_tool "Amass" "amass" ;;
+      4) run_tool "subfinder" "subfinder" ;;
+      5) run_tool "sherlock" "sherlock" ;;
+      6) run_tool "dnsrecon" "dnsrecon" ;;
+      7) run_tool "wafw00f" "wafw00f" ;;
+      8) run_tool "whatweb" "whatweb" ;;
+      9) run_tool "recon-ng" "recon-ng" ;;
+      0) return ;;
+      *) warn "Invalid" ;;
+    esac
+  done
+}
+
+menu_network() {
+  while true; do
+    banner
+    echo -e "${BOLD}  NETWORK TOOLS${NC}"
+    echo
+    echo "  1) Wireshark (GUI)"
+    echo "  2) tshark (CLI)"
+    echo "  3) aircrack-ng"
+    echo "  4) bettercap"
+    echo "  5) ettercap"
+    echo "  6) hping3"
+    echo "  7) macchanger"
+    echo "  8) tcpdump"
+    echo "  9) scapy (Python interactive)"
+    echo "  0) Back"
+    echo
+    read -rp "  Choice: " c
+    case $c in
+      1) run_tool "wireshark" "wireshark" ;;
+      2) run_tool "tshark" "tshark" ;;
+      3) run_tool "aircrack-ng" "aircrack-ng" ;;
+      4) run_tool "bettercap" "bettercap" ;;
+      5) run_tool "ettercap" "ettercap" ;;
+      6) run_tool "hping3" "hping3" ;;
+      7) run_tool "macchanger" "macchanger" ;;
+      8) run_tool "tcpdump" "tcpdump" ;;
+      9)
+         if activate_python; then
+           info "Starting scapy..."
+           exec python3 -c "from scapy.all import *; interact(mydict=globals())"
+         else
+           warn "Python venv missing"
+           sleep 1
+         fi
+         ;;
+      0) return ;;
+      *) warn "Invalid" ;;
+    esac
+  done
+}
+
+menu_enum() {
+  while true; do
+    banner
+    echo -e "${BOLD}  ENUMERATION${NC}"
+    echo
+    echo "  1) gobuster"
+    echo "  2) dirsearch             (Python)"
+    echo "  3) enum4linux"
+    echo "  4) EyeWitness"
+    echo "  5) httpx"
+    echo "  6) ffuf"
+    echo "  7) NetExec / CME         (Python)"
+    echo "  0) Back"
+    echo
+    read -rp "  Choice: " c
+    case $c in
+      1) run_tool "gobuster" "gobuster" ;;
+      2) run_tool "dirsearch" "dirsearch" ;;
+      3) run_tool "enum4linux" "enum4linux" ;;
+      4) run_tool "EyeWitness" "EyeWitness" ;;
+      5) run_tool "httpx" "httpx" ;;
+      6) run_tool "ffuf" "ffuf" ;;
+      7) run_tool "NetExec" "nxc" || run_tool "CrackMapExec" "cme" ;;
+      0) return ;;
+      *) warn "Invalid" ;;
+    esac
+  done
+}
+
+menu_vuln() {
+  while true; do
+    banner
+    echo -e "${BOLD}  VULNERABILITY ANALYSIS${NC}"
+    echo
+    echo "  1) nikto"
+    echo "  2) sqlmap                (Python)"
+    echo "  3) nuclei"
+    echo "  4) OpenVAS / Greenbone (if installed)"
+    echo "  0) Back"
+    echo
+    read -rp "  Choice: " c
+    case $c in
+      1) run_tool "nikto" "nikto" ;;
+      2) run_tool "sqlmap" "sqlmap" ;;
+      3) run_tool "nuclei" "nuclei" ;;
+      4) run_tool "openvas" "gvm-start" || run_tool "openvas" "openvas" ;;
+      0) return ;;
+      *) warn "Invalid" ;;
+    esac
+  done
+}
+
+menu_system() {
+  while true; do
+    banner
+    echo -e "${BOLD}  SYSTEM / POST-EXPLOITATION (authorized only)${NC}"
+    echo
+    echo "  1) Metasploit (msfconsole)"
+    echo "  2) hydra"
+    echo "  3) john"
+    echo "  4) hashcat"
+    echo "  5) PEASS-ng (linpeas / winpeas)"
+    echo "  6) Responder              (Python)"
+    echo "  7) Impacket tools         (Python)"
+    echo "  8) Certipy                (Python)"
+    echo "  0) Back"
+    echo
+    read -rp "  Choice: " c
+    case $c in
+      1) run_tool "metasploit" "msfconsole" ;;
+      2) run_tool "hydra" "hydra" ;;
+      3) run_tool "john" "john" ;;
+      4) run_tool "hashcat" "hashcat" ;;
+      5)
+         if [[ -d "$TOOLS_DIR/PEASS-ng" ]]; then
+           info "PEASS-ng available under $TOOLS_DIR/PEASS-ng"
+           ls -la "$TOOLS_DIR/PEASS-ng"
+           read -rp "Press Enter..."
+         else
+           warn "PEASS-ng not installed"
+         fi
+         ;;
+      6) run_tool "Responder" "Responder.py" "$TOOLS_DIR/Responder" ;;
+      7)
+         if activate_python; then
+           info "Impacket is available. Examples: secretsdump.py, psexec.py, smbclient.py, GetUserSPNs.py..."
+           echo "Dropping into Python shell with impacket loaded."
+           exec python3 -c "import impacket; print('impacket', impacket.__version__); import code; code.interact(local=globals())"
+         else
+           warn "Python venv / impacket missing"
+         fi
+         ;;
+      8)
+         if activate_python && command -v certipy &>/dev/null; then
+           exec certipy
+         else
+           warn "certipy not found – install system category or pip install certipy-ad"
+         fi
+         ;;
+      0) return ;;
+      *) warn "Invalid" ;;
+    esac
+  done
+}
+
+menu_web() {
+  while true; do
+    banner
+    echo -e "${BOLD}  WEB APPLICATION${NC}"
+    echo
+    echo "  1) OWASP ZAP"
+    echo "  2) sqlmap                (Python)"
+    echo "  3) wpscan"
+    echo "  4) wfuzz                 (Python)"
+    echo "  5) ffuf"
+    echo "  6) weevely               (Python)"
+    echo "  0) Back"
+    echo
+    read -rp "  Choice: " c
+    case $c in
+      1) run_tool "zaproxy" "zap.sh" || run_tool "zaproxy" "zaproxy" ;;
+      2) run_tool "sqlmap" "sqlmap" ;;
+      3) run_tool "wpscan" "wpscan" ;;
+      4) run_tool "wfuzz" "wfuzz" ;;
+      5) run_tool "ffuf" "ffuf" ;;
+      6) run_tool "weevely" "weevely" ;;
+      0) return ;;
+      *) warn "Invalid" ;;
+    esac
+  done
+}
+
+menu_password() {
+  while true; do
+    banner
+    echo -e "${BOLD}  PASSWORD CRACKING & WORDLISTS${NC}"
+    echo
+    echo "  1) hashcat"
+    echo "  2) john"
+    echo "  3) hydra"
+    echo "  4) Browse SecLists"
+    echo "  5) crunch (wordlist generator)"
+    echo "  0) Back"
+    echo
+    read -rp "  Choice: " c
+    case $c in
+      1) run_tool "hashcat" "hashcat" ;;
+      2) run_tool "john" "john" ;;
+      3) run_tool "hydra" "hydra" ;;
+      4)
+         if [[ -d "$WORDLISTS_DIR/SecLists" ]]; then
+           info "Opening SecLists directory..."
+           cd "$WORDLISTS_DIR/SecLists" && exec bash
+         else
+           warn "SecLists not found. Install password category first."
+         fi
+         ;;
+      5) run_tool "crunch" "crunch" ;;
+      0) return ;;
+      *) warn "Invalid" ;;
+    esac
+  done
+}
+
+menu_wireless() {
+  while true; do
+    banner
+    echo -e "${BOLD}  WIRELESS${NC}"
+    echo
+    echo "  1) aircrack-ng suite"
+    echo "  2) reaver"
+    echo "  3) kismet"
+    echo "  4) macchanger"
+    echo "  0) Back"
+    echo
+    read -rp "  Choice: " c
+    case $c in
+      1) run_tool "aircrack-ng" "aircrack-ng" ;;
+      2) run_tool "reaver" "reaver" ;;
+      3) run_tool "kismet" "kismet" ;;
+      4) run_tool "macchanger" "macchanger" ;;
+      0) return ;;
+      *) warn "Invalid" ;;
+    esac
+  done
+}
+
+menu_forensics() {
+  while true; do
+    banner
+    echo -e "${BOLD}  FORENSICS${NC}"
+    echo
+    echo "  1) Autopsy"
+    echo "  2) Volatility 3          (Python)"
+    echo "  3) Sleuth Kit tools"
+    echo "  0) Back"
+    echo
+    read -rp "  Choice: " c
+    case $c in
+      1) run_tool "autopsy" "autopsy" ;;
+      2) run_tool "volatility3" "vol" || run_tool "volatility3" "volatility3" ;;
+      3) info "Sleuth Kit tools (fls, icat, mmls...) are in PATH if installed"; sleep 2 ;;
+      0) return ;;
+      *) warn "Invalid" ;;
+    esac
+  done
+}
+
+menu_extra() {
+  while true; do
+    banner
+    echo -e "${BOLD}  EXTRA / OSINT / PRIVACY${NC}"
+    echo
+    echo "  1) tor"
+    echo "  2) proxychains"
+    echo "  3) phoneinfoga            (Python)"
+    echo "  4) metagoofil             (Python)"
+    echo "  5) keepassxc"
+    echo "  6) Drop into WarMachine Python shell"
+    echo "  0) Back"
+    echo
+    read -rp "  Choice: " c
+    case $c in
+      1) run_tool "tor" "tor" ;;
+      2) run_tool "proxychains" "proxychains4" || run_tool "proxychains" "proxychains" ;;
+      3) run_tool "phoneinfoga" "phoneinfoga" ;;
+      4) run_tool "metagoofil" "metagoofil" ;;
+      5) run_tool "keepassxc" "keepassxc" ;;
+      6) drop_into_python ;;
+      0) return ;;
+      *) warn "Invalid" ;;
+    esac
+  done
+}
+
+menu_python() {
+  while true; do
+    banner
+    echo -e "${BOLD}  PYTHON 3 TOOLS & ENVIRONMENT${NC}"
+    echo
+    echo "  1) Drop into WarMachine Python shell (venv)"
+    echo "  2) theHarvester"
+    echo "  3) sqlmap"
+    echo "  4) dirsearch"
+    echo "  5) Impacket interactive"
+    echo "  6) scapy interactive"
+    echo "  7) Volatility 3"
+    echo "  8) Responder"
+    echo "  9) Show installed Python packages"
+    echo "  0) Back"
+    echo
+    read -rp "  Choice: " c
+    case $c in
+      1) drop_into_python ;;
+      2) run_tool "theHarvester" "theHarvester" ;;
+      3) run_tool "sqlmap" "sqlmap" ;;
+      4) run_tool "dirsearch" "dirsearch" ;;
+      5)
+         if activate_python; then
+           exec python3 -c "import impacket; print('impacket', getattr(impacket,'__version__','?')); import code; code.interact(local=globals())"
+         else
+           warn "venv / impacket missing"
+         fi
+         ;;
+      6)
+         if activate_python; then
+           exec python3 -c "from scapy.all import *; interact(mydict=globals())"
+         else
+           warn "venv / scapy missing"
+         fi
+         ;;
+      7) run_tool "volatility3" "vol" ;;
+      8) run_tool "Responder" "Responder.py" ;;
+      9)
+         if activate_python; then
+           pip list
+           read -rp "Press Enter..."
+         else
+           warn "venv missing"
+         fi
+         ;;
+      0) return ;;
+      *) warn "Invalid" ;;
+    esac
+  done
+}
+
+menu_rust() {
+  while true; do
+    banner
+    echo -e "${BOLD}  RUST SECURITY TOOLS${NC}"
+    echo
+    echo "  1) rustscan          – ultra-fast port scanner"
+    echo "  2) feroxbuster       – recursive content discovery"
+    echo "  3) findomain         – subdomain discovery"
+    echo "  4) sn0int            – semi-automatic OSINT framework"
+    echo "  5) x8                – hidden parameter discovery"
+    echo "  6) websocat          – WebSocket netcat"
+    echo "  7) oha               – HTTP load / stress testing"
+    echo "  8) hurl              – HTTP testing & scripting"
+    echo "  9) rg (ripgrep)      – fast recursive search"
+    echo " 10) fd                – user-friendly find"
+    echo " 11) bat               – better cat"
+    echo " 12) List ~/.cargo/bin"
+    echo "  0) Back"
+    echo
+    read -rp "  Choice: " c
+    case $c in
+      1) run_tool "rustscan" "rustscan" ;;
+      2) run_tool "feroxbuster" "feroxbuster" ;;
+      3) run_tool "findomain" "findomain" ;;
+      4) run_tool "sn0int" "sn0int" ;;
+      5) run_tool "x8" "x8" ;;
+      6) run_tool "websocat" "websocat" ;;
+      7) run_tool "oha" "oha" ;;
+      8) run_tool "hurl" "hurl" ;;
+      9) run_tool "rg" "rg" ;;
+      10) run_tool "fd" "fd" ;;
+      11) run_tool "bat" "bat" ;;
+      12)
+         echo
+         ls -la "${HOME}/.cargo/bin" 2>/dev/null || ls -la /root/.cargo/bin 2>/dev/null || warn "No cargo bin found"
+         echo
+         read -rp "Press Enter..."
+         ;;
+      0) return ;;
+      *) warn "Invalid" ;;
+    esac
+  done
+}
+
+menu_sliver() {
+  while true; do
+    banner
+    echo -e "${BOLD}  RED TEAM – SLIVER C2 (AUTHORIZED USE ONLY)${NC}"
+    echo
+    echo -e "  ${YELLOW}WARNING: Full adversary-emulation / C2 framework.${NC}"
+    echo -e "  ${YELLOW}Use only with explicit written authorization.${NC}"
+    echo
+    echo "  1) Launch Sliver (sliver / interactive)"
+    echo "  2) Launch sliver-server"
+    echo "  3) Launch sliver-client"
+    echo "  4) WarMachine helper (wm-sliver)"
+    echo "  5) Show Sliver paths / status"
+    echo "  6) Open Sliver docs note"
+    echo "  0) Back"
+    echo
+    read -rp "  Choice: " c
+    case $c in
+      1)
+         echo
+         warn "AUTHORIZED USE ONLY – proceeding to launch Sliver"
+         sleep 1
+         if command -v sliver &>/dev/null; then
+           exec sliver
+         elif [[ -x "${BIN_DIR}/sliver" ]]; then
+           exec "${BIN_DIR}/sliver"
+         elif [[ -x "${BIN_DIR}/sliver-server" ]]; then
+           exec "${BIN_DIR}/sliver-server"
+         else
+           error "Sliver not found. Run installer option 14 first."
+           sleep 2
+         fi
+         ;;
+      2)
+         if command -v sliver-server &>/dev/null; then
+           exec sliver-server
+         elif [[ -x "${BIN_DIR}/sliver-server" ]]; then
+           exec "${BIN_DIR}/sliver-server"
+         else
+           error "sliver-server not found"
+           sleep 2
+         fi
+         ;;
+      3)
+         if command -v sliver-client &>/dev/null; then
+           exec sliver-client
+         elif [[ -x "${BIN_DIR}/sliver-client" ]]; then
+           exec "${BIN_DIR}/sliver-client"
+         else
+           error "sliver-client not found"
+           sleep 2
+         fi
+         ;;
+      4)
+         if [[ -x "${BIN_DIR}/wm-sliver" ]]; then
+           exec "${BIN_DIR}/wm-sliver"
+         else
+           error "wm-sliver helper missing – re-run installer option 14"
+           sleep 2
+         fi
+         ;;
+      5)
+         echo
+         echo "System PATH:"
+         command -v sliver 2>/dev/null || echo "  sliver: not in PATH"
+         command -v sliver-server 2>/dev/null || echo "  sliver-server: not in PATH"
+         command -v sliver-client 2>/dev/null || echo "  sliver-client: not in PATH"
+         echo
+         echo "WarMachine bin:"
+         ls -la "${BIN_DIR}"/sliver* "${BIN_DIR}"/wm-sliver 2>/dev/null || echo "  (none)"
+         echo
+         read -rp "Press Enter..."
+         ;;
+      6)
+         if [[ -f "${TOOLS_DIR}/sliver/README-AUTHORIZED-USE.txt" ]]; then
+           less "${TOOLS_DIR}/sliver/README-AUTHORIZED-USE.txt"
+         else
+           echo "Docs: https://sliver.sh/  |  https://github.com/BishopFox/sliver"
+           read -rp "Press Enter..."
+         fi
+         ;;
+      0) return ;;
+      *) warn "Invalid" ;;
+    esac
+  done
+}
+
+# ---------- Main interactive menu ----------
+main_menu() {
+  while true; do
+    banner
+    echo -e "${BOLD}  MAIN CONTROL MENU${NC}"
+    echo
+    echo "  1) Reconnaissance / Footprinting"
+    echo "  2) Network Tools"
+    echo "  3) Enumeration"
+    echo "  4) Vulnerability Analysis"
+    echo "  5) System / Post-Exploitation"
+    echo "  6) Web Application"
+    echo "  7) Password Cracking + Wordlists"
+    echo "  8) Wireless"
+    echo "  9) Forensics"
+    echo " 10) Extra / OSINT / Privacy"
+    echo " 11) Python 3 Tools & Environment"
+    echo " 12) Rust Security Tools"
+    echo " 13) Red Team – Sliver C2            ← AUTHORIZED ONLY"
+    echo
+    echo "  s) Start Multiplex Session (tmux)"
+    echo "  p) Drop into WarMachine Python shell"
+    echo "  r) Open Reports folder"
+    echo "  t) Open Tools directory"
+    echo "  w) Open Wordlists"
+    echo "  l) View install / control log"
+    echo "  q) Quit"
+    echo
+    read -rp "  Choice: " choice
+    case $choice in
+      1) menu_recon ;;
+      2) menu_network ;;
+      3) menu_enum ;;
+      4) menu_vuln ;;
+      5) menu_system ;;
+      6) menu_web ;;
+      7) menu_password ;;
+      8) menu_wireless ;;
+      9) menu_forensics ;;
+      10) menu_extra ;;
+      11) menu_python ;;
+      12) menu_rust ;;
+      13) menu_sliver ;;
+      s|S) start_multiplex ;;
+      p|P) drop_into_python ;;
+      r|R) cd "$REPORTS_DIR" && exec bash ;;
+      t|T) cd "$TOOLS_DIR" && exec bash ;;
+      w|W) cd "$WORDLISTS_DIR" && exec bash ;;
+      l|L) less "$LOGFILE" 2>/dev/null || less "${WORKSPACE}/install.log" ;;
+      q|Q) echo -e "${GREEN}Stay ethical.${NC}"; exit 0 ;;
+      *) warn "Invalid choice" ; sleep 1 ;;
+    esac
+  done
+}
+
+# ---------- Multiplex (tmux) session ----------
+start_multiplex() {
+  if ! command -v tmux &>/dev/null; then
+    error "tmux is required for multiplex mode. Install with:  sudo dnf install tmux"
+    sleep 2
+    return
+  fi
+
+  if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    info "Session '$SESSION_NAME' already exists. Attaching..."
+    exec tmux attach-session -t "$SESSION_NAME"
+  fi
+
+  log "Creating new multiplex WarMachine session..."
+
+  tmux new-session -d -s "$SESSION_NAME" -n "Control" -c "$WORKSPACE"
+
+  tmux split-window -h -t "$SESSION_NAME:0" -c "$TOOLS_DIR"
+  tmux split-window -v -t "$SESSION_NAME:0.1" -c "$REPORTS_DIR"
+
+  tmux new-window -t "$SESSION_NAME" -n "Recon" -c "$TOOLS_DIR"
+  tmux new-window -t "$SESSION_NAME" -n "Network" -c "$WORKSPACE"
+  tmux new-window -t "$SESSION_NAME" -n "Web" -c "$TOOLS_DIR"
+  tmux new-window -t "$SESSION_NAME" -n "Python" -c "$WORKSPACE"
+  tmux new-window -t "$SESSION_NAME" -n "Reports" -c "$REPORTS_DIR"
+
+  # Pre-activate Python in the Python window
+  if [[ -f "${VENV_DIR}/bin/activate" ]]; then
+    tmux send-keys -t "$SESSION_NAME:Python" "source ${VENV_DIR}/bin/activate && echo 'WarMachine Python venv ready'" C-m
+  fi
+
+  tmux select-window -t "$SESSION_NAME:0"
+  tmux select-pane -t "$SESSION_NAME:0.0"
+  tmux send-keys -t "$SESSION_NAME:0.0" "cd '$WORKSPACE' && clear && echo 'WarMachine Control – type:  wm-control   or use the panes / windows'" C-m
+
+  tmux set-option -t "$SESSION_NAME" status-style "bg=colour235,fg=colour136"
+  tmux set-option -t "$SESSION_NAME" status-left "#[fg=green,bold] WarMachine "
+  tmux set-option -t "$SESSION_NAME" status-right "#[fg=cyan]#{session_name} | %H:%M "
+
+  info "Multiplex session ready."
+  echo
+  echo -e "  ${BOLD}Layout:${NC}"
+  echo "    Window 0  Control   – split (menu | tools | reports)"
+  echo "    Window 1  Recon"
+  echo "    Window 2  Network"
+  echo "    Window 3  Web"
+  echo "    Window 4  Python    ← WarMachine venv ready"
+  echo "    Window 5  Reports"
+  echo
+  echo -e "  ${CYAN}Attach with:${NC}  tmux attach -t $SESSION_NAME"
+  echo
+  sleep 1
+  exec tmux attach-session -t "$SESSION_NAME"
+}
+
+# ---------- Entry point ----------
+main() {
+  ensure_workspace
+
+  case "${1:-}" in
+    start|multiplex|tmux)
+      start_multiplex
+      ;;
+    menu|tui)
+      main_menu
+      ;;
+    python|py|venv)
+      drop_into_python
+      ;;
+    *)
+      main_menu
+      ;;
+  esac
+}
+
+main "$@"
