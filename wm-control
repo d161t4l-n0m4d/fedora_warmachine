@@ -124,17 +124,43 @@ draw_status_bar() {
 }
 
 # ---------- Launch ----------
+# Resolve binary path only
+find_bin() {
+  local name="$1" cmd="${2:-$1}"
+  local bin
+  bin=$(resolve_bin "$cmd")
+  [[ -z "$bin" ]] && bin=$(resolve_bin "$name")
+  echo "$bin"
+}
+
+# Prompt for CLI arguments (user-friendly)
+prompt_args() {
+  local tool="$1"
+  local hint="${2:-}"
+  local example="${3:-}"
+  echo
+  echo -e "  ${BOLD}${tool}${NC}"
+  [[ -n "$hint" ]] && echo -e "  ${D}${hint}${NC}"
+  [[ -n "$example" ]] && echo -e "  ${D}example: ${example}${NC}"
+  echo
+  read -rp "  Arguments (or Enter for --help): " args
+  # default to help if empty so user sees usage
+  if [[ -z "${args// }" ]]; then
+    echo "$args"
+    return 0
+  fi
+  echo "$args"
+}
+
 launch() {
   local name="$1"
   local cmd="${2:-$1}"
   local extra="${3:-}"
 
   local bin
-  bin=$(resolve_bin "$cmd")
-  [[ -z "$bin" ]] && bin=$(resolve_bin "$name")
+  bin=$(find_bin "$name" "$cmd")
 
   if [[ -z "$bin" ]]; then
-    # tool directory fallback
     if [[ -d "${TOOLS_DIR}/$name" ]]; then
       info "Opening tool directory: ${TOOLS_DIR}/$name"
       cd "${TOOLS_DIR}/$name"
@@ -153,13 +179,129 @@ launch() {
     return 1
   fi
 
-  info "Launching ${BOLD}${name}${NC} → $bin"
-  if [[ -n "$extra" ]]; then
-    exec "$bin" $extra
-  else
-    # Interactive tools: just exec; for --help tools user can pass args later
-    exec "$bin"
+  info "Launching ${BOLD}${name}${NC} → $bin ${extra}"
+  # shellcheck disable=SC2086
+  exec "$bin" $extra
+}
+
+# Guided runners for tools that need targets
+run_rustscan() {
+  local bin
+  bin=$(find_bin rustscan rustscan)
+  if [[ -z "$bin" ]]; then
+    err "rustscan not found – installer option 13"; pause; return 1
   fi
+  draw_header "rustscan"
+  echo -e "  ${D}Fast port scanner. Requires a target with -a${NC}"
+  echo
+  echo "  Common options:"
+  echo "    -a <IP/CIDR/host>   addresses to scan   (required)"
+  echo "    -r <range>          ports e.g. 1-1000 or 80,443"
+  echo "    -ul <file>          targets from file"
+  echo "    --ulimit 5000       raise open files (often needed)"
+  echo
+  read -rp "  Target IP / CIDR / hostname: " target
+  if [[ -z "$target" ]]; then
+    warn "No target – showing help"
+    "$bin" --help | less
+    pause
+    return
+  fi
+  read -rp "  Port range [default: top ports / full if empty]: " ports
+  read -rp "  Extra flags (e.g. --ulimit 5000 -b 500) [optional]: " extra
+
+  local args=(-a "$target")
+  [[ -n "$ports" ]] && args+=(-r "$ports")
+  # shellcheck disable=SC2206
+  [[ -n "$extra" ]] && args+=($extra)
+
+  echo
+  info "Command: rustscan ${args[*]}"
+  echo
+  # shellcheck disable=SC2086
+  exec "$bin" "${args[@]}"
+}
+
+run_nmap() {
+  local bin
+  bin=$(find_bin nmap nmap)
+  if [[ -z "$bin" ]]; then
+    err "nmap not found"; pause; return 1
+  fi
+  draw_header "nmap"
+  echo -e "  ${D}Network mapper${NC}"
+  echo
+  read -rp "  Target IP / host / CIDR: " target
+  if [[ -z "$target" ]]; then
+    "$bin" --help | less
+    pause
+    return
+  fi
+  echo "  Profiles:  1) quick (-T4 -F)  2) default  3) version (-sV)  4) full (-sC -sV)  5) custom"
+  read -rp "  Profile [2]: " prof
+  local args=()
+  case "${prof:-2}" in
+    1) args=(-T4 -F) ;;
+    3) args=(-sV) ;;
+    4) args=(-sC -sV) ;;
+    5) read -rp "  Custom flags: " custom; # shellcheck disable=SC2206
+       args=($custom) ;;
+    *) args=() ;;
+  esac
+  info "Command: nmap ${args[*]} $target"
+  exec "$bin" "${args[@]}" "$target"
+}
+
+run_feroxbuster() {
+  local bin
+  bin=$(find_bin feroxbuster feroxbuster)
+  if [[ -z "$bin" ]]; then
+    err "feroxbuster not found"; pause; return 1
+  fi
+  draw_header "feroxbuster"
+  echo -e "  ${D}Recursive content discovery${NC}"
+  echo
+  read -rp "  Target URL (https://example.com): " url
+  if [[ -z "$url" ]]; then
+    "$bin" --help | less
+    pause
+    return
+  fi
+  local default_wl=""
+  [[ -f /usr/share/wordlists/dirb/common.txt ]] && default_wl="/usr/share/wordlists/dirb/common.txt"
+  [[ -f "${WORDLISTS_DIR}/SecLists/Discovery/Web-Content/common.txt" ]] && default_wl="${WORDLISTS_DIR}/SecLists/Discovery/Web-Content/common.txt"
+  read -rp "  Wordlist path [${default_wl:-required}]: " wl
+  wl="${wl:-$default_wl}"
+  read -rp "  Extra flags (e.g. -t 50 -d 2) [optional]: " extra
+  local args=(-u "$url")
+  [[ -n "$wl" ]] && args+=(-w "$wl")
+  # shellcheck disable=SC2206
+  [[ -n "$extra" ]] && args+=($extra)
+  info "Command: feroxbuster ${args[*]}"
+  exec "$bin" "${args[@]}"
+}
+
+run_findomain() {
+  local bin
+  bin=$(find_bin findomain findomain)
+  if [[ -z "$bin" ]]; then
+    err "findomain not found"; pause; return 1
+  fi
+  draw_header "findomain"
+  echo -e "  ${D}Subdomain enumeration${NC}"
+  echo
+  read -rp "  Domain (example.com): " domain
+  if [[ -z "$domain" ]]; then
+    "$bin" --help | less
+    pause
+    return
+  fi
+  read -rp "  Extra flags (e.g. -q -u url) [optional]: " extra
+  local args=(-t "$domain")
+  # shellcheck disable=SC2206
+  [[ -n "$extra" ]] && args+=($extra)
+  info "Command: findomain ${args[*]}"
+  exec "$bin" "${args[@]}"
 }
 
 # Menu line with install indicator
@@ -293,12 +435,12 @@ menu_recon() {
     echo
     read -rp "  Select: " c
     case $c in
-      1) launch nmap nmap ;;
+      1) run_nmap ;;
       2) launch theHarvester theHarvester ;;
       3) launch Amass amass ;;
       4) launch subfinder subfinder ;;
       5) launch sherlock sherlock ;;
-      6) launch findomain findomain ;;
+      6) run_findomain ;;
       7) launch dnsrecon dnsrecon ;;
       8) launch wafw00f wafw00f ;;
       9) launch whatweb whatweb ;;
@@ -361,7 +503,7 @@ menu_enum() {
     read -rp "  Select: " c
     case $c in
       1) launch gobuster gobuster ;;
-      2) launch feroxbuster feroxbuster ;;
+      2) run_feroxbuster ;;
       3) launch dirsearch dirsearch ;;
       4) launch ffuf ffuf ;;
       5) launch enum4linux enum4linux ;;
@@ -571,9 +713,9 @@ menu_rust() {
     echo
     read -rp "  Select: " c
     case $c in
-      1) launch rustscan rustscan ;;
-      2) launch feroxbuster feroxbuster ;;
-      3) launch findomain findomain ;;
+      1) run_rustscan ;;
+      2) run_feroxbuster ;;
+      3) run_findomain ;;
       4) launch sn0int sn0int ;;
       5) launch x8 x8 ;;
       6) launch websocat websocat ;;
