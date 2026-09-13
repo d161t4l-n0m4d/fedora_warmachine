@@ -1,171 +1,306 @@
 # Hive SEC WarMachine – Fedora Edition
 
-Specialized workspace + interactive installer + **multiplex terminal TUI** with full **Python 3 + Rust** integration for professional ethical hackers and security researchers on Fedora Linux.
+Professional ethical-hacking workspace for Fedora: interactive installer, advanced control TUI, multiplex tmux session, and integrated **Python 3**, **Rust**, and **Sliver** stacks.
 
 ## Legal / Ethical Notice
 
-**Use only for authorized testing, research, education, and defensive purposes.**  
-Unauthorized scanning, exploitation, or access to systems you do not own or lack explicit written permission to test is a crime. You are solely responsible for complying with all applicable laws and regulations.
+**Use only for authorized testing, research, education, and defensive work.**  
+Unauthorized scanning, exploitation, or access to systems you do not own or lack explicit written permission to test is illegal. You are solely responsible for compliance with all applicable laws and engagement rules.
+
+---
 
 ## Components
 
 | File | Purpose |
 |------|---------|
-| `install_warmachine.sh` | Interactive installer (Python core + Rust tools + categories) |
-| `wm-control` | Multiplex Terminal TUI control interface |
-| `README.md` | This file |
+| `install_warmachine.sh` | Category installer (dnf, git, pip/venv, cargo, Sliver) |
+| `wm-control` | Advanced control dashboard + guided tool runners |
+| `tmux.warmachine.conf` | tmux theme, prefix, and keybindings for multiplex mode |
+| `README.md` | This documentation |
 
-## Sliver – Red Team C2 (option 14)
+---
 
-Integrates **BishopFox Sliver**, an open-source adversary emulation / C2 framework.
+## Quick Start
 
-- Official installer path + GitHub release fallback
-- Launchers: `sliver`, `sliver-server`, `sliver-client`, `wm-sliver`
-- Control TUI → menu **13 – Red Team – Sliver C2**
+```bash
+# 1. Place files under ~/WarMachine (or keep the folder together)
+chmod +x install_warmachine.sh wm-control
 
-**AUTHORIZED USE ONLY.** Explicit written authorization required. Unauthorized use is illegal.
-
-Docs: https://sliver.sh/ · https://github.com/BishopFox/sliver
-
-## Rust Security Tools (option 13)
-
-Installs famous Rust-based security / recon tools via `cargo`:
-
-| Tool | Purpose |
-|------|---------|
-| **rustscan** | Ultra-fast port scanner |
-| **feroxbuster** | Recursive content discovery (dirbusting) |
-| **findomain** | Subdomain discovery |
-| **sn0int** | Semi-automatic OSINT framework |
-| **x8** | Hidden HTTP parameter discovery |
-| **websocat** | Netcat for WebSockets |
-| **oha** | HTTP load / stress testing |
-| **hurl** | HTTP testing & scripting |
-| **rg** (ripgrep) | Extremely fast recursive search |
-| **fd** | User-friendly find |
-| **bat** | Better cat (handy for reports) |
-
-Optional: rustcat, netscanner, authoscope, yara-x.
-
-Tools land in `~/.cargo/bin` and are linked into `~/WarMachine/bin`.  
-The control TUI has a dedicated **Rust Security Tools** menu (option 12).
-
-## Python 3 Integration
-
-The installer creates a dedicated virtual environment:
-
-```
-~/WarMachine/venv/
+# 2. Install tools (root for dnf / system packages)
+sudo ./install_warmachine.sh
 ```
 
-### How it works
+**Recommended install order**
 
-1. **Option 0** in the installer (recommended first) creates the venv and installs high-value packages.
-2. Many tools are installed **into the venv** (or as editable installs from git) so dependencies stay isolated.
-3. Convenient launchers are placed in `~/WarMachine/bin/`.
-4. The control TUI automatically activates the venv when launching Python tools.
+| Option | What it installs |
+|--------|------------------|
+| **0** | Python core venv + high-value CLIs |
+| **13** | Rust tools (prebuilt feroxbuster/findomain + cargo) |
+| **1–12** | Recon, network, enum, vuln, system, web, passwords, wireless, forensics, social, malware, extra |
+| **14** | Sliver C2 (**authorized use only**) |
+| **a** | Everything |
 
-### Activate the environment manually
+```bash
+# 3. Control interface
+./wm-control              # dashboard
+./wm-control start        # multiplex tmux workspace
+./wm-control python       # venv shell
+./wm-control status       # tool inventory
+./wm-control search nmap  # find tools
+./wm-control help
+```
+
+Optional global command:
+
+```bash
+sudo ln -sf "$(pwd)/wm-control" /usr/local/bin/wm-control
+```
+
+---
+
+## Control Dashboard (`wm-control`)
+
+### Features
+
+- Live **status bar** (Python / Rust / Sliver stacks)
+- Per-tool marks: **✓** installed · **·** missing
+- Guided prompts for tools that need targets:
+  - **rustscan** → IP/CIDR, ports, extra flags
+  - **nmap** → target + scan profile
+  - **feroxbuster** → URL + wordlist
+  - **findomain** → domain
+- Search, inventory, help screens
+- Sliver launch requires explicit **y/N** confirmation
+
+### Main menu
+
+| Key | Section |
+|-----|---------|
+| 1–9 | Recon → Forensics |
+| 10 | Python 3 environment |
+| 11 | Rust security tools |
+| 12 | Red Team – Sliver C2 (auth only) |
+| 13 | Folders & logs |
+| 14 | Tool inventory |
+| 15 | Search tools |
+| 16 | Help |
+| **s** | Start multiplex session |
+| **p** | Python venv shell |
+| **q** | Quit |
+
+### CLI modes
+
+```bash
+wm-control              # interactive dashboard
+wm-control start        # tmux multiplex
+wm-control python       # drop into venv
+wm-control status       # inventory
+wm-control search TERM  # search
+wm-control help
+```
+
+---
+
+## Multiplex Session (`wm-control start`)
+
+Requires: `sudo dnf install tmux`
+
+Uses `tmux.warmachine.conf` (prefix **Ctrl-a**, mouse, status bar).
+
+### Windows
+
+| Window | Name | Purpose |
+|--------|------|---------|
+| 1 | **HUD** | Control TUI (left) · ops shell · notes/reports |
+| 2 | **Recon** | Scanning / OSINT panes |
+| 3 | **Network** | Capture / traffic |
+| 4 | **Web** | App testing + wordlists |
+| 5 | **Exploit** | Post-exp / C2 notes (authorized only) |
+| 6 | **Python** | WarMachine venv ready |
+| 7 | **Logs** | Reports + live install.log tail |
+
+### Keybindings
+
+| Keys | Action |
+|------|--------|
+| **Ctrl-a** | Prefix |
+| **Alt-1 … Alt-7** | Jump to window |
+| **Ctrl-a \|** | Split vertical |
+| **Ctrl-a -** | Split horizontal |
+| **Ctrl-a h/j/k/l** | Move between panes |
+| **Ctrl-a H/J/K/L** | Resize panes |
+| **Ctrl-a z** | Zoom pane |
+| **Ctrl-a d** | Detach (session keeps running) |
+| **Ctrl-a m** | Jump to HUD |
+| Mouse | Click / resize |
+
+```bash
+tmux attach -t WarMachine          # rejoin
+tmux kill-session -t WarMachine    # destroy session
+```
+
+If a session already exists, the launcher offers **Attach** or **Kill & recreate**.
+
+---
+
+## Installer Categories
+
+| # | Category |
+|---|----------|
+| 0 | Python Core Environment |
+| 1 | Footprinting / Recon |
+| 2 | Network Tools |
+| 3 | Enumeration |
+| 4 | Vulnerability Analysis |
+| 5 | System Hacking / Post-Exploitation |
+| 6 | Web Application |
+| 7 | Password Cracking + Wordlists |
+| 8 | Wireless |
+| 9 | Forensics |
+| 10 | Social Engineering (authorized simulations) |
+| 11 | Malware Analysis |
+| 12 | Extra / OSINT / Privacy |
+| 13 | Rust Security Tools |
+| 14 | Sliver (Red Team C2) – **AUTHORIZED ONLY** |
+| a | All of the above |
+
+---
+
+## Python 3
+
+Dedicated venv: `~/WarMachine/venv/`
 
 ```bash
 source ~/WarMachine/activate
 # or
 ~/WarMachine/bin/wm-python
-```
-
-### Key Python tools integrated
-
-| Tool | Category | Notes |
-|------|----------|-------|
-| theHarvester | Recon | OSINT |
-| sqlmap | Vuln / Web | SQL injection research |
-| dirsearch | Enumeration | Web path discovery |
-| wafw00f | Recon | WAF fingerprinting |
-| Impacket | System / AD | secretsdump, psexec, etc. |
-| Scapy | Network | Packet crafting |
-| Responder | System | LLMNR/NBT-NS |
-| Volatility 3 | Forensics | Memory analysis |
-| NetExec / CME | Enumeration | Network/AD |
-| Certipy | System | AD certificate research |
-| phoneinfoga, metagoofil, sherlock, recon-ng, wfuzz, weevely, SET … | Various | |
-
-Plus libraries: `scapy`, `impacket`, `pwntools`, `ropper`, `shodan`, `censys`, `yara-python`, `pefile`, etc.
-
-## Quick Start
-
-### 1. Install tools
-```bash
-chmod +x install_warmachine.sh
-sudo ./install_warmachine.sh
-```
-**Strongly recommended:**  
-- **0** → Python Core Environment  
-- **13** → Rust Security Tools  
-then any other categories you need (or `a` for all).
-
-### 2. Launch the Control Interface
-```bash
-chmod +x wm-control
-
-# Interactive TUI
-./wm-control
-
-# Full multiplex (tmux) session
-./wm-control start
-
-# Jump straight into the Python venv
+# or
 ./wm-control python
 ```
 
-Optional symlink:
-```bash
-sudo ln -sf $(pwd)/wm-control /usr/local/bin/wm-control
-```
+| Tool | Role |
+|------|------|
+| theHarvester | OSINT |
+| sqlmap | SQLi research |
+| dirsearch | Web path discovery |
+| wafw00f | WAF fingerprinting |
+| Impacket | AD / network protocols |
+| Scapy | Packet crafting |
+| Responder | LLMNR/NBT-NS |
+| Volatility 3 | Memory forensics |
+| NetExec | Network / AD enum |
+| Certipy | AD certificate research |
 
-## Control Interface highlights
-
-- Main menu with all categories
-- New **Python 3 Tools & Environment** menu (option 11)
-- One-key access to scapy / impacket interactive shells
-- Multiplex session now includes a dedicated **Python** window with the venv pre-activated
-- Smart launcher that prefers:
-  1. WarMachine bin launchers
-  2. System binaries
-  3. Tool directory + venv Python
-
-## Multiplex Session Layout (`wm-control start`)
-
-| Window | Name     | Purpose |
-|--------|----------|---------|
-| 0      | Control  | Split (menu \| tools \| reports) |
-| 1      | Recon    | Recon tools |
-| 2      | Network  | Network testing |
-| 3      | Web      | Web application testing |
-| 4      | Python   | WarMachine venv ready |
-| 5      | Reports  | Notes & findings |
-
-## Workspace layout
-
-```
-~/WarMachine/
-├── activate          # source this to enter the venv
-├── bin/              # launchers (wm-python, theHarvester, sqlmap, …)
-├── tools/            # git-cloned tools
-├── venv/             # dedicated Python 3 virtual environment
-├── wordlists/        # SecLists etc.
-├── reports/
-├── install.log
-├── install_warmachine.sh
-└── wm-control
-```
-
-## Recommended extra packages
-
-```bash
-sudo dnf install tmux pipx
-```
-
-Stay ethical. Always obtain proper authorization before any testing.
+Also: sherlock, recon-ng, wfuzz, phoneinfoga, metagoofil, SET, and libraries such as `pwntools`, `shodan`, `censys`, `yara-python`.
 
 ---
-Hive SEC WarMachine – Python 3 ready.
+
+## Rust Tools (option 13)
+
+| Tool | Role | Install method |
+|------|------|----------------|
+| **feroxbuster** | Content discovery | Prebuilt (official script / GitHub zip) |
+| **findomain** | Subdomains | Prebuilt zip (`findomain-linux.zip`) — *not* crates.io (yanked) |
+| **rustscan** | Fast port scan | cargo (or package) |
+| sn0int, x8, websocat, oha, hurl | OSINT / HTTP / params | cargo |
+| rg, fd, bat | Search / find / cat | cargo |
+
+Binaries: `~/.cargo/bin` (linked into `~/WarMachine/bin`).
+
+### Manual fix if findomain 404’d
+
+```bash
+mkdir -p ~/.cargo/bin
+cd /tmp
+curl -fsSL -o findomain-linux.zip \
+  https://github.com/Findomain/Findomain/releases/latest/download/findomain-linux.zip
+unzip -o findomain-linux.zip
+chmod +x findomain 2>/dev/null || chmod +x findomain-linux 2>/dev/null
+mv -f findomain ~/.cargo/bin/findomain 2>/dev/null || mv -f findomain-linux ~/.cargo/bin/findomain
+export PATH="$HOME/.cargo/bin:$PATH"
+findomain -V
+```
+
+### rustscan from the dashboard
+
+Menu **11 → 1** prompts for target IP/CIDR, ports, and flags.
+
+From the shell:
+
+```bash
+rustscan -a 192.168.1.10 --ulimit 5000
+rustscan -a 10.0.0.0/24 -r 80,443,8080
+```
+
+---
+
+## Sliver – Red Team C2 (option 14)
+
+[BishopFox Sliver](https://github.com/BishopFox/sliver) adversary-emulation framework.
+
+- Official installer: `curl https://sliver.sh/install | bash`
+- Fallback: GitHub release assets
+- Launchers: `sliver`, `sliver-server`, `sliver-client`, `wm-sliver`
+- Dashboard: menu **12** (confirmation required)
+
+**AUTHORIZED USE ONLY.** Written permission required. Unauthorized use is illegal.
+
+Docs: https://sliver.sh/
+
+---
+
+## Workspace Layout
+
+```
+~/WarMachine/   (or /opt/WarMachine when installer runs purely as root)
+├── activate                 # source → enter Python venv
+├── bin/                     # launchers & symlinks
+├── tools/                   # git-cloned tools
+├── venv/                    # Python 3 virtualenv
+├── wordlists/               # SecLists, etc.
+├── reports/                 # findings / notes
+├── install.log
+├── control.log
+├── install_warmachine.sh
+├── wm-control
+├── tmux.warmachine.conf
+└── README.md
+```
+
+PATH helper (after install): `/etc/profile.d/warmachine.sh`  
+Includes `~/WarMachine/bin`, `~/.cargo/bin`, `~/go/bin`, `~/.local/bin`.
+
+---
+
+## Dependencies
+
+```bash
+sudo dnf install tmux git curl wget python3 python3-pip python3-devel \
+  rust cargo unzip jq
+```
+
+Optional: `pipx`, Fedora Security Lab packages, Burp Suite Community (manual download).
+
+---
+
+## Troubleshooting
+
+| Issue | Fix |
+|-------|-----|
+| Rust cargo permission errors | Run installer option 13 again; ensure `~/.cargo` is owned by your user: `sudo chown -R "$USER:$USER" ~/.cargo` |
+| feroxbuster compile fails | Installer uses prebuilt; or: `curl -sL https://raw.githubusercontent.com/epi052/feroxbuster/main/install-nix.sh \| bash -s ~/.cargo/bin` |
+| findomain 404 | Use `findomain-linux.zip` from GitHub releases (see above) |
+| rustscan “too many open files” | Add `--ulimit 5000` |
+| tmux session already exists | Choose Attach, or Kill & recreate from `wm-control start` |
+| Tool shows **·** in menu | Install the matching installer category |
+
+---
+
+## Ethics
+
+Stay within scope. Prefer isolated labs and CTFs for practice. Always obtain proper authorization before testing production or third-party systems.
+
+---
+
+Hive SEC WarMachine — Python · Rust · Sliver · Multiplex TUI  
+*For professional researchers only.*
