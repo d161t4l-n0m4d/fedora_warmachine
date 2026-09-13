@@ -418,15 +418,40 @@ install_python_core() {
 }
 
 # ---------- Rust tools ----------
+# Resolve the real (non-root) user so cargo never writes as root into a user home
+rust_real_user() {
+  if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    echo "$SUDO_USER"
+  elif [[ $EUID -ne 0 ]]; then
+    echo "$(id -un)"
+  else
+    echo ""
+  fi
+}
+
+rust_real_home() {
+  local u
+  u="$(rust_real_user)"
+  if [[ -n "$u" ]]; then
+    getent passwd "$u" | cut -d: -f6
+  else
+    echo "${HOME:-/root}"
+  fi
+}
+
 setup_rust_env() {
   log "=== Setting up Rust toolchain ==="
+
+  local real_user real_home
+  real_user="$(rust_real_user)"
+  real_home="$(rust_real_home)"
 
   if ! command -v rustc &>/dev/null || ! command -v cargo &>/dev/null; then
     log "Installing Rust via dnf (rust + cargo)..."
     dnf -y install rust cargo rust-src || {
-      warn "dnf rust failed – trying rustup..."
-      if [[ -n "${SUDO_USER:-}" ]]; then
-        sudo -u "$SUDO_USER" bash -c 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y' || true
+      warn "dnf rust failed – trying rustup as the real user..."
+      if [[ -n "$real_user" ]]; then
+        sudo -u "$real_user" -H bash -c 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y' || true
       else
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y || true
       fi
@@ -435,77 +460,122 @@ setup_rust_env() {
     info "Rust already present: $(rustc --version 2>/dev/null || echo '?')"
   fi
 
-  # Ensure cargo bin is on PATH for current and future sessions
-  local cargo_bin="${HOME}/.cargo/bin"
-  if [[ -n "${SUDO_USER:-}" ]]; then
-    cargo_bin="$(getent passwd "$SUDO_USER" | cut -d: -f6)/.cargo/bin"
+  # User-owned cargo directories (never leave root-owned dirs in a user home)
+  local cargo_home="${real_home}/.cargo"
+  local cargo_bin="${cargo_home}/bin"
+  if [[ -n "$real_user" ]]; then
+    sudo -u "$real_user" -H mkdir -p "$cargo_bin" "${real_home}/.rustup" 2>/dev/null || true
+    # Fix accidental root ownership from earlier runs
+    chown -R "$real_user:$real_user" "$cargo_home" 2>/dev/null || true
+    chown -R "$real_user:$real_user" "${real_home}/.rustup" 2>/dev/null || true
+  else
+    mkdir -p "$cargo_bin" 2>/dev/null || true
   fi
-  mkdir -p "$cargo_bin" 2>/dev/null || true
 
-  # Update system-wide PATH helper
+  # PATH helper
+  if [[ ! -f /etc/profile.d/warmachine.sh ]]; then
+    echo 'export PATH="$PATH:$HOME/WarMachine/bin:/opt/WarMachine/bin:$HOME/go/bin:$HOME/.local/bin:$HOME/.cargo/bin"' > /etc/profile.d/warmachine.sh
+  fi
   if ! grep -q '\.cargo/bin' /etc/profile.d/warmachine.sh 2>/dev/null; then
-    echo "export PATH=\"\$PATH:${cargo_bin}:\$HOME/.cargo/bin\"" >> /etc/profile.d/warmachine.sh
+    echo 'export PATH="$PATH:$HOME/.cargo/bin"' >> /etc/profile.d/warmachine.sh
   fi
+  chmod 644 /etc/profile.d/warmachine.sh 2>/dev/null || true
 
-  export PATH="${PATH}:${cargo_bin}:${HOME}/.cargo/bin"
-  log "Rust environment ready"
+  export PATH="${PATH}:${cargo_bin}:${real_home}/.cargo/bin"
+  log "Rust environment ready (cargo home: ${cargo_home})"
 }
 
 install_rust_tools() {
   log "=== Famous Rust Hacking / Security Tools ==="
   setup_rust_env
 
-  # Helper: cargo install as the real user when possible (avoids root-owned ~/.cargo)
+  local real_user real_home cargo_home cargo_bin
+  real_user="$(rust_real_user)"
+  real_home="$(rust_real_home)"
+  cargo_home="${real_home}/.cargo"
+  cargo_bin="${cargo_home}/bin"
+
+  # Ensure WarMachine bin exists and is writable by the real user when possible
+  mkdir -p "$BIN_DIR"
+  if [[ -n "$real_user" && -d "$WORKSPACE" ]]; then
+    chown -R "$real_user:$real_user" "$WORKSPACE" 2>/dev/null || true
+  fi
+
+  # Run cargo strictly as the real user with explicit CARGO_HOME
+  # Install into the user's ~/.cargo/bin (standard) and also link into WarMachine/bin
   cargo_install() {
     local crate="$1"
-    local bin_name="${2:-$1}"
     log "cargo install $crate ..."
-    if [[ -n "${SUDO_USER:-}" ]]; then
-      sudo -u "$SUDO_USER" -H bash -c "source \$HOME/.cargo/env 2>/dev/null; cargo install --locked $crate" \
-        || sudo -u "$SUDO_USER" -H bash -c "cargo install $crate" \
-        || warn "Failed to install $crate"
+
+    local cmd="export CARGO_HOME='${cargo_home}'; export PATH=\"${cargo_bin}:\$PATH\"; source '${cargo_home}/env' 2>/dev/null || true; command -v cargo >/dev/null && cargo install --locked ${crate} || cargo install ${crate}"
+
+    if [[ -n "$real_user" ]]; then
+      if sudo -u "$real_user" -H bash -lc "$cmd"; then
+        info "Installed $crate"
+      else
+        warn "Failed to install $crate (see cargo output above)"
+      fi
     else
+      # Already root / no SUDO_USER – install into root's cargo (lab VMs only)
+      export CARGO_HOME="${cargo_home}"
+      export PATH="${cargo_bin}:${PATH}"
       cargo install --locked "$crate" || cargo install "$crate" || warn "Failed to install $crate"
     fi
   }
 
   # --- Core famous tools ---
-  cargo_install rustscan          # ultra-fast port scanner
-  cargo_install feroxbuster       # recursive content discovery (dirbusting)
-  cargo_install findomain         # subdomain discovery
-  cargo_install sn0int            # semi-automatic OSINT framework
-  cargo_install x8                # hidden HTTP parameter discovery
-  cargo_install websocat          # netcat for WebSockets
-  cargo_install oha               # HTTP load / stress testing
-  cargo_install hurl              # HTTP testing & scripting
-  cargo_install ripgrep rg        # fast search (rg)
-  cargo_install fd-find fd        # user-friendly find
-  cargo_install bat               # better cat (handy for reports)
+  cargo_install rustscan
+  cargo_install feroxbuster
+  cargo_install findomain
+  cargo_install sn0int
+  cargo_install x8
+  cargo_install websocat
+  cargo_install oha
+  cargo_install hurl
+  cargo_install ripgrep
+  cargo_install fd-find
+  cargo_install bat
 
-  # Optional / secondary (may take longer or need extra deps)
-  cargo_install rustcat || true           # rust netcat alternative
-  cargo_install netscanner || true        # network scanner TUI
-  cargo_install authoscope || true        # credential bruteforcer framework
+  # Optional (failures ignored)
+  cargo_install rustcat || true
+  cargo_install netscanner || true
+  cargo_install authoscope || true
+  cargo_install yara-x || true
 
-  # yara-x (modern YARA rewrite in Rust) – may need extra system libs
-  cargo_install yara-x || warn "yara-x install skipped (optional)"
-
-  # Create convenience wrappers in WarMachine bin (point to cargo bins)
-  local cargo_bin="${HOME}/.cargo/bin"
-  [[ -n "${SUDO_USER:-}" ]] && cargo_bin="$(getent passwd "$SUDO_USER" | cut -d: -f6)/.cargo/bin"
-
-  for tool in rustscan feroxbuster findomain sn0int x8 websocat oha hurl rg fd bat; do
-    if [[ -x "${cargo_bin}/${tool}" ]]; then
-      ln -sf "${cargo_bin}/${tool}" "${BIN_DIR}/${tool}" 2>/dev/null || true
+  # Symlink into WarMachine/bin (resolve alternate binary names)
+  link_rust_bin() {
+    local src_name="$1"
+    local dst_name="${2:-$1}"
+    if [[ -x "${cargo_bin}/${src_name}" ]]; then
+      ln -sf "${cargo_bin}/${src_name}" "${BIN_DIR}/${dst_name}" 2>/dev/null || true
     fi
-  done
+  }
+
+  link_rust_bin rustscan
+  link_rust_bin feroxbuster
+  link_rust_bin findomain
+  link_rust_bin sn0int
+  link_rust_bin x8
+  link_rust_bin websocat
+  link_rust_bin oha
+  link_rust_bin hurl
+  link_rust_bin rg
+  link_rust_bin fd
+  link_rust_bin bat
+  # fd-find crate installs as "fd"
+  link_rust_bin fd fd
+
+  if [[ -n "$real_user" ]]; then
+    chown -R "$real_user:$real_user" "$cargo_home" 2>/dev/null || true
+    chown -h "$real_user:$real_user" "${BIN_DIR}"/* 2>/dev/null || true
+  fi
 
   log "Rust security tools installed"
-  log "They live in ~/.cargo/bin (and are linked into ${BIN_DIR})"
+  log "Binaries: ${cargo_bin}  (linked from ${BIN_DIR})"
+  info "Open a new shell or run:  source /etc/profile.d/warmachine.sh"
   info "Examples:  rustscan -a 192.168.1.0/24"
   info "           feroxbuster -u https://target -w wordlist.txt"
   info "           findomain -t example.com"
-  info "           sn0int"
 }
 
 # ---------- Sliver (Red Team C2) ----------
