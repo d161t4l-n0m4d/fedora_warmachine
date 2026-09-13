@@ -795,37 +795,136 @@ menu_files() {
   done
 }
 
+# Path to this script (for launching control inside tmux)
+WM_CONTROL_SELF="${BASH_SOURCE[0]:-$0}"
+[[ "${WM_CONTROL_SELF}" != /* ]] && WM_CONTROL_SELF="$(cd "$(dirname "$WM_CONTROL_SELF")" && pwd)/$(basename "$WM_CONTROL_SELF")"
+TMUX_CONF="${WORKSPACE}/tmux.warmachine.conf"
+
+print_mux_banner() {
+  cat << EOF
+${G}${BOLD}
+  WarMachine Multiplex
+${NC}
+  Prefix key:  ${BOLD}Ctrl-a${NC}   (then press the key below)
+
+  ${BOLD}Windows${NC} (Alt+number also works)
+    1  HUD       control + shell + notes
+    2  Recon     scanning / OSINT
+    3  Network   capture / traffic
+    4  Web       app testing
+    5  Exploit   post-exp / C2 notes
+    6  Python    venv shell
+    7  Logs      reports / tail
+
+  ${BOLD}Panes${NC}
+    Ctrl-a |     split vertical
+    Ctrl-a -     split horizontal
+    Ctrl-a h/j/k/l   move between panes
+    Ctrl-a H/J/K/L   resize
+    Ctrl-a z     zoom pane
+    Ctrl-a d     detach (session keeps running)
+    Ctrl-a m     jump to HUD
+
+  Re-attach later:  ${C}tmux attach -t ${SESSION_NAME}${NC}
+  Kill session:     ${C}tmux kill-session -t ${SESSION_NAME}${NC}
+
+EOF
+}
+
 start_multiplex() {
   if ! command -v tmux &>/dev/null; then
     err "tmux required:  sudo dnf install tmux"
     pause
     return
   fi
+
+  # Always refresh conf path inside workspace
+  if [[ ! -f "$TMUX_CONF" && -f "$(dirname "$WM_CONTROL_SELF")/tmux.warmachine.conf" ]]; then
+    TMUX_CONF="$(dirname "$WM_CONTROL_SELF")/tmux.warmachine.conf"
+  fi
+
   if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-    info "Attaching to existing session $SESSION_NAME"
-    exec tmux attach-session -t "$SESSION_NAME"
+    echo
+    echo -e "  Session ${C}${SESSION_NAME}${NC} already running."
+    echo "  1) Attach"
+    echo "  2) Kill and recreate"
+    echo "  0) Cancel"
+    read -rp "  > " ans
+    case "$ans" in
+      1) exec tmux -f "${TMUX_CONF:-/dev/null}" attach-session -t "$SESSION_NAME" ;;
+      2) tmux kill-session -t "$SESSION_NAME" ;;
+      *) return ;;
+    esac
   fi
 
-  info "Creating multiplex session…"
-  tmux new-session -d -s "$SESSION_NAME" -n "Control" -c "$WORKSPACE"
-  tmux split-window -h -t "$SESSION_NAME:0" -c "$TOOLS_DIR"
-  tmux split-window -v -t "$SESSION_NAME:0.1" -c "$REPORTS_DIR"
+  info "Building multiplex workspace…"
+
+  local conf_args=()
+  [[ -f "$TMUX_CONF" ]] && conf_args=(-f "$TMUX_CONF")
+
+  # --- HUD: control | ops | notes ---
+  tmux "${conf_args[@]}" new-session -d -s "$SESSION_NAME" -n "HUD" -c "$WORKSPACE"
+  tmux set-option -t "$SESSION_NAME" status on
+  if [[ -f "$TMUX_CONF" ]]; then
+    tmux source-file "$TMUX_CONF" 2>/dev/null || true
+  fi
+
+  tmux send-keys -t "${SESSION_NAME}:HUD" "export PATH=\"${BIN_DIR}:${CARGO_BIN}:\$PATH\"; clear" C-m
+  if [[ -x "$WM_CONTROL_SELF" ]]; then
+    tmux send-keys -t "${SESSION_NAME}:HUD" "bash '$WM_CONTROL_SELF'" C-m
+  else
+    tmux send-keys -t "${SESSION_NAME}:HUD" "echo 'Run: wm-control'; bash" C-m
+  fi
+  tmux select-pane -t "${SESSION_NAME}:HUD" -T "control"
+
+  tmux split-window -h -t "${SESSION_NAME}:HUD" -c "$TOOLS_DIR"
+  tmux send-keys -t "${SESSION_NAME}:HUD.2" "export PATH=\"${BIN_DIR}:${CARGO_BIN}:\$PATH\"; clear; echo -e '\\033[1;32mOps shell\\033[0m  ${TOOLS_DIR}'; echo" C-m
+  tmux select-pane -t "${SESSION_NAME}:HUD.2" -T "ops"
+
+  tmux split-window -v -t "${SESSION_NAME}:HUD.2" -c "$REPORTS_DIR"
+  tmux send-keys -t "${SESSION_NAME}:HUD.3" "clear; echo -e '\\033[1;33mNotes / reports\\033[0m  ${REPORTS_DIR}'; ls -la 2>/dev/null; echo" C-m
+  tmux select-pane -t "${SESSION_NAME}:HUD.3" -T "notes"
+  tmux select-layout -t "${SESSION_NAME}:HUD" main-vertical 2>/dev/null || true
+
   tmux new-window -t "$SESSION_NAME" -n "Recon" -c "$TOOLS_DIR"
+  tmux send-keys -t "${SESSION_NAME}:Recon" "export PATH=\"${BIN_DIR}:${CARGO_BIN}:\$PATH\"; clear; echo -e '\\033[1;36mRecon\\033[0m  rustscan | feroxbuster | findomain | nmap'; echo; echo '  rustscan -a IP --ulimit 5000'; echo" C-m
+  tmux split-window -v -t "${SESSION_NAME}:Recon" -c "$WORKSPACE"
+  tmux send-keys -t "${SESSION_NAME}:Recon.2" "export PATH=\"${BIN_DIR}:${CARGO_BIN}:\$PATH\"; clear; echo 'Recon secondary'" C-m
+
   tmux new-window -t "$SESSION_NAME" -n "Network" -c "$WORKSPACE"
+  tmux send-keys -t "${SESSION_NAME}:Network" "export PATH=\"${BIN_DIR}:${CARGO_BIN}:\$PATH\"; clear; echo -e '\\033[1;36mNetwork\\033[0m  tshark | tcpdump | bettercap'; echo" C-m
+
   tmux new-window -t "$SESSION_NAME" -n "Web" -c "$TOOLS_DIR"
+  tmux send-keys -t "${SESSION_NAME}:Web" "export PATH=\"${BIN_DIR}:${CARGO_BIN}:\$PATH\"; clear; echo -e '\\033[1;36mWeb\\033[0m  sqlmap | feroxbuster | ffuf | nuclei'; echo" C-m
+  tmux split-window -h -t "${SESSION_NAME}:Web" -c "$WORDLISTS_DIR"
+  tmux send-keys -t "${SESSION_NAME}:Web.2" "clear; echo Wordlists; ls 2>/dev/null | head" C-m
+
+  tmux new-window -t "$SESSION_NAME" -n "Exploit" -c "$WORKSPACE"
+  tmux send-keys -t "${SESSION_NAME}:Exploit" "export PATH=\"${BIN_DIR}:${CARGO_BIN}:\$PATH\"; clear; echo -e '\\033[1;33mExploit / post\\033[0m  msf | hydra | sliver (authorized only)'; echo" C-m
+
   tmux new-window -t "$SESSION_NAME" -n "Python" -c "$WORKSPACE"
-  tmux new-window -t "$SESSION_NAME" -n "Reports" -c "$REPORTS_DIR"
-
   if [[ -f "${VENV_DIR}/bin/activate" ]]; then
-    tmux send-keys -t "$SESSION_NAME:Python" "source '${VENV_DIR}/bin/activate'; echo 'WarMachine Python ready'" C-m
+    tmux send-keys -t "${SESSION_NAME}:Python" "source '${VENV_DIR}/bin/activate'; export PATH=\"${BIN_DIR}:\$PATH\"; clear; echo -e '\\033[1;32m(wm-python)\\033[0m ready'; echo" C-m
+  else
+    tmux send-keys -t "${SESSION_NAME}:Python" "clear; echo 'venv missing – installer option 0'" C-m
   fi
-  tmux select-window -t "$SESSION_NAME:0"
-  tmux send-keys -t "$SESSION_NAME:0.0" "clear; echo 'WarMachine Control – run: wm-control'; echo" C-m
-  tmux set-option -t "$SESSION_NAME" status-style "bg=colour235,fg=colour136"
-  tmux set-option -t "$SESSION_NAME" status-left "#[fg=green,bold] WarMachine "
-  tmux set-option -t "$SESSION_NAME" status-right "#[fg=cyan]#{session_name} | %H:%M "
 
-  exec tmux attach-session -t "$SESSION_NAME"
+  tmux new-window -t "$SESSION_NAME" -n "Logs" -c "$REPORTS_DIR"
+  tmux send-keys -t "${SESSION_NAME}:Logs" "clear; echo -e '\\033[1;36mLogs\\033[0m'; ls -la '${REPORTS_DIR}' 2>/dev/null" C-m
+  tmux split-window -v -t "${SESSION_NAME}:Logs" -c "$WORKSPACE"
+  if [[ -f "${WORKSPACE}/install.log" ]]; then
+    tmux send-keys -t "${SESSION_NAME}:Logs.2" "tail -f '${WORKSPACE}/install.log'" C-m
+  else
+    tmux send-keys -t "${SESSION_NAME}:Logs.2" "echo 'No install.log yet'" C-m
+  fi
+
+  tmux select-window -t "${SESSION_NAME}:HUD"
+  tmux select-pane -t "${SESSION_NAME}:HUD.1" 2>/dev/null || true
+
+  clear
+  print_mux_banner
+  sleep 1
+  exec tmux "${conf_args[@]}" attach-session -t "$SESSION_NAME"
 }
 
 # ---------- Main dashboard ----------
