@@ -495,87 +495,127 @@ install_rust_tools() {
   cargo_home="${real_home}/.cargo"
   cargo_bin="${cargo_home}/bin"
 
-  # Ensure WarMachine bin exists and is writable by the real user when possible
-  mkdir -p "$BIN_DIR"
-  if [[ -n "$real_user" && -d "$WORKSPACE" ]]; then
+  mkdir -p "$BIN_DIR" "$cargo_bin"
+  if [[ -n "$real_user" ]]; then
     chown -R "$real_user:$real_user" "$WORKSPACE" 2>/dev/null || true
+    chown -R "$real_user:$real_user" "$cargo_home" 2>/dev/null || true
   fi
 
-  # Run cargo strictly as the real user with explicit CARGO_HOME
-  # Install into the user's ~/.cargo/bin (standard) and also link into WarMachine/bin
+  run_as_user() {
+    if [[ -n "$real_user" ]]; then
+      sudo -u "$real_user" -H bash -lc "$*"
+    else
+      bash -lc "$*"
+    fi
+  }
+
   cargo_install() {
     local crate="$1"
     log "cargo install $crate ..."
-
-    local cmd="export CARGO_HOME='${cargo_home}'; export PATH=\"${cargo_bin}:\$PATH\"; source '${cargo_home}/env' 2>/dev/null || true; command -v cargo >/dev/null && cargo install --locked ${crate} || cargo install ${crate}"
-
-    if [[ -n "$real_user" ]]; then
-      if sudo -u "$real_user" -H bash -lc "$cmd"; then
-        info "Installed $crate"
-      else
-        warn "Failed to install $crate (see cargo output above)"
-      fi
+    local cmd="export CARGO_HOME='${cargo_home}'; export PATH='${cargo_bin}:\$PATH'; source '${cargo_home}/env' 2>/dev/null || true; cargo install --locked ${crate} 2>/dev/null || cargo install ${crate}"
+    if run_as_user "$cmd"; then
+      info "Installed $crate via cargo"
+      return 0
     else
-      # Already root / no SUDO_USER – install into root's cargo (lab VMs only)
-      export CARGO_HOME="${cargo_home}"
-      export PATH="${cargo_bin}:${PATH}"
-      cargo install --locked "$crate" || cargo install "$crate" || warn "Failed to install $crate"
+      warn "cargo install failed for $crate"
+      return 1
     fi
   }
 
-  # --- Core famous tools ---
-  cargo_install rustscan
-  cargo_install feroxbuster
-  cargo_install findomain
-  cargo_install sn0int
-  cargo_install x8
-  cargo_install websocat
-  cargo_install oha
-  cargo_install hurl
-  cargo_install ripgrep
-  cargo_install fd-find
-  cargo_install bat
+  # ---------- Prebuilt binaries (avoid compile failures & yanked crates) ----------
 
-  # Optional (failures ignored)
+  # feroxbuster – official install script (prebuilt), not cargo
+  log "Installing feroxbuster (prebuilt – cargo often fails to compile)..."
+  if command -v feroxbuster &>/dev/null || [[ -x "${cargo_bin}/feroxbuster" ]]; then
+    info "feroxbuster already present"
+  else
+    if run_as_user "curl -sL https://raw.githubusercontent.com/epi052/feroxbuster/main/install-nix.sh | bash -s '${cargo_bin}'"; then
+      info "feroxbuster installed via official script"
+    else
+      log "Fallback: direct GitHub zip..."
+      local fb_tmp
+      fb_tmp=$(mktemp -d)
+      if curl -fsSL -o "${fb_tmp}/fb.zip" \
+        "https://github.com/epi052/feroxbuster/releases/latest/download/x86_64-linux-feroxbuster.zip"; then
+        unzip -qo "${fb_tmp}/fb.zip" -d "$fb_tmp"
+        local fb_bin
+        fb_bin=$(find "$fb_tmp" -type f -name 'feroxbuster' | head -1)
+        if [[ -n "$fb_bin" ]]; then
+          install -m 755 "$fb_bin" "${cargo_bin}/feroxbuster"
+          [[ -n "$real_user" ]] && chown "$real_user:$real_user" "${cargo_bin}/feroxbuster"
+          info "feroxbuster installed from GitHub release"
+        fi
+      else
+        warn "feroxbuster download failed"
+      fi
+      rm -rf "$fb_tmp"
+    fi
+  fi
+  [[ -x "${cargo_bin}/feroxbuster" ]] && ln -sf "${cargo_bin}/feroxbuster" "${BIN_DIR}/feroxbuster" 2>/dev/null || true
+
+  # findomain – yanked from crates.io; GitHub ships zip assets (findomain-linux.zip)
+  log "Installing findomain (prebuilt zip from GitHub releases)..."
+  if command -v findomain &>/dev/null || [[ -x "${cargo_bin}/findomain" ]]; then
+    info "findomain already present"
+  else
+    local fd_tmp
+    fd_tmp=$(mktemp -d)
+    if curl -fsSL -o "${fd_tmp}/findomain-linux.zip" \
+         "https://github.com/Findomain/Findomain/releases/latest/download/findomain-linux.zip" \
+      || curl -fsSL -o "${fd_tmp}/findomain-linux.zip" \
+         "https://github.com/Findomain/Findomain/releases/download/10.0.1/findomain-linux.zip"; then
+      unzip -qo "${fd_tmp}/findomain-linux.zip" -d "$fd_tmp"
+      local fd_bin
+      fd_bin=$(find "$fd_tmp" -type f \( -name 'findomain' -o -name 'findomain-linux' \) | head -1)
+      if [[ -z "$fd_bin" ]]; then
+        fd_bin=$(find "$fd_tmp" -type f -executable | head -1)
+      fi
+      if [[ -n "$fd_bin" && -f "$fd_bin" ]]; then
+        install -m 755 "$fd_bin" "${cargo_bin}/findomain"
+        [[ -n "$real_user" ]] && chown "$real_user:$real_user" "${cargo_bin}/findomain"
+        ln -sf "${cargo_bin}/findomain" "${BIN_DIR}/findomain" 2>/dev/null || true
+        info "findomain installed from GitHub release zip"
+      else
+        warn "findomain binary not found inside zip"
+      fi
+    else
+      warn "findomain download failed – see https://github.com/Findomain/Findomain/releases"
+    fi
+    rm -rf "$fd_tmp"
+  fi
+
+  # rustscan – cargo first, then optional package
+  if ! cargo_install rustscan; then
+    warn "rustscan cargo build failed – you can install later via: cargo install rustscan"
+  fi
+
+  # ---------- Cargo crates that usually compile fine ----------
+  cargo_install sn0int || true
+  cargo_install x8 || true
+  cargo_install websocat || true
+  cargo_install oha || true
+  cargo_install hurl || true
+  cargo_install ripgrep || true
+  cargo_install fd-find || true
+  cargo_install bat || true
   cargo_install rustcat || true
   cargo_install netscanner || true
   cargo_install authoscope || true
-  cargo_install yara-x || true
 
-  # Symlink into WarMachine/bin (resolve alternate binary names)
-  link_rust_bin() {
-    local src_name="$1"
-    local dst_name="${2:-$1}"
-    if [[ -x "${cargo_bin}/${src_name}" ]]; then
-      ln -sf "${cargo_bin}/${src_name}" "${BIN_DIR}/${dst_name}" 2>/dev/null || true
-    fi
-  }
-
-  link_rust_bin rustscan
-  link_rust_bin feroxbuster
-  link_rust_bin findomain
-  link_rust_bin sn0int
-  link_rust_bin x8
-  link_rust_bin websocat
-  link_rust_bin oha
-  link_rust_bin hurl
-  link_rust_bin rg
-  link_rust_bin fd
-  link_rust_bin bat
-  # fd-find crate installs as "fd"
-  link_rust_bin fd fd
+  for tool in rustscan feroxbuster findomain sn0int x8 websocat oha hurl rg fd bat; do
+    [[ -x "${cargo_bin}/${tool}" ]] && ln -sf "${cargo_bin}/${tool}" "${BIN_DIR}/${tool}" 2>/dev/null || true
+  done
+  command -v rustscan &>/dev/null && ln -sf "$(command -v rustscan)" "${BIN_DIR}/rustscan" 2>/dev/null || true
+  command -v feroxbuster &>/dev/null && ln -sf "$(command -v feroxbuster)" "${BIN_DIR}/feroxbuster" 2>/dev/null || true
 
   if [[ -n "$real_user" ]]; then
     chown -R "$real_user:$real_user" "$cargo_home" 2>/dev/null || true
-    chown -h "$real_user:$real_user" "${BIN_DIR}"/* 2>/dev/null || true
   fi
 
-  log "Rust security tools installed"
-  log "Binaries: ${cargo_bin}  (linked from ${BIN_DIR})"
-  info "Open a new shell or run:  source /etc/profile.d/warmachine.sh"
-  info "Examples:  rustscan -a 192.168.1.0/24"
-  info "           feroxbuster -u https://target -w wordlist.txt"
-  info "           findomain -t example.com"
+  log "Rust security tools install finished"
+  log "Binaries under: ${cargo_bin}  and  ${BIN_DIR}"
+  info "Reload PATH:  source /etc/profile.d/warmachine.sh"
+  info "Test:  feroxbuster -V ; findomain -V 2>/dev/null; rustscan -V 2>/dev/null"
 }
 
 # ---------- Sliver (Red Team C2) ----------
